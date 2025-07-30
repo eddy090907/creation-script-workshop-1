@@ -8,6 +8,30 @@ A continuación se presentan 5 enunciados de consultas basados en las coleccione
 
 **Consulta MongoDB:**
 ```javascript
+db.clientes.aggregate([
+  {
+    $unwind: "$cuentas"
+  },
+  {
+    $group: {
+      _id: "$cuentas.tipo_cuenta",
+      totalSaldo: { $sum: "$cuentas.saldo" },
+      promedioSaldo: { $avg: "$cuentas.saldo" },
+      saldoMaximo: { $max: "$cuentas.saldo" },
+      saldoMinimo: { $min: "$cuentas.saldo" }
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      tipoCuenta: "$_id",
+      totalSaldo: 1,
+      promedioSaldo: 1,
+      saldoMaximo: 1,
+      saldoMinimo: 1
+    }
+  }
+])
 ```
 
 ## 2. Patrones de Transacciones por Cliente
@@ -16,6 +40,37 @@ A continuación se presentan 5 enunciados de consultas basados en las coleccione
 
 **Consulta MongoDB:**
 ```javascript
+db.transacciones.aggregate([
+  {
+    $group: {
+      _id: {
+        cliente: "$cliente_ref",
+        tipo: "$tipo_transaccion"
+      },
+      cantidadTransacciones: { $sum: 1 },
+      montoTotal: { $sum: "$monto" }
+    }
+  },
+  {
+    $group: {
+      _id: "$_id.cliente",
+      transaccionesPorTipo: {
+        $push: {
+          tipoTransaccion: "$_id.tipo",
+          cantidad: "$cantidadTransacciones",
+          total: "$montoTotal"
+        }
+      }
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      cliente: "$_id",
+      transaccionesPorTipo: 1
+    }
+  }
+])
 ```
 
 ## 3. Clientes con Múltiples Tarjetas de Crédito
@@ -24,6 +79,48 @@ A continuación se presentan 5 enunciados de consultas basados en las coleccione
 
 **Consulta MongoDB:**
 ```javascript
+db.clientes.aggregate([
+  // Separar cuentas
+  { $unwind: "$cuentas" },
+  // Separar tarjetas dentro de cada cuenta
+  { $unwind: "$cuentas.tarjetas" },
+  // Filtrar solo tarjetas de crédito
+  {
+    $match: {
+      "cuentas.tarjetas.tipo_tarjeta": "credito"
+    }
+  },
+  // Agrupar por cliente para contar y recolectar detalles
+  {
+    $group: {
+      _id: "$_id",
+      nombre: { $first: "$nombre" },
+      cedula: { $first: "$cedula" },
+      correo: { $first: "$correo" },
+      direccion: { $first: "$direccion" },
+      cantidadTarjetasCredito: { $sum: 1 },
+      tarjetasCredito: { $push: "$cuentas.tarjetas" }
+    }
+  },
+  // Filtrar clientes con más de una tarjeta de crédito
+  {
+    $match: {
+      cantidadTarjetasCredito: { $gt: 1 }
+    }
+  },
+  // Dar formato a la salida
+  {
+    $project: {
+      _id: 0,
+      nombre: 1,
+      cedula: 1,
+      correo: 1,
+      direccion: 1,
+      cantidadTarjetasCredito: 1,
+      tarjetasCredito: 1
+    }
+  }
+])
 ```
 
 ## 4. Análisis de Medios de Pago más Utilizados
@@ -32,6 +129,51 @@ A continuación se presentan 5 enunciados de consultas basados en las coleccione
 
 **Consulta MongoDB:**
 ```javascript
+db.transacciones.aggregate([
+  // Filtrar solo transacciones de tipo depósito
+  {
+    $match: {
+      tipo_transaccion: "deposito"
+    }
+  },
+  // Crear campo 'mes' con formato YYYY-MM
+  {
+    $addFields: {
+      mes: {
+        $dateToString: {
+          format: "%Y-%m",
+          date: { $toDate: "$fecha" }
+        }
+      }
+    }
+  },
+  // Se agrupa por mes y medio de pago
+  {
+    $group: {
+      _id: {
+        mes: "$mes",
+        medioPago: "$detalles_deposito.medio_pago"
+      },
+      cantidad: { $sum: 1 }
+    }
+  },
+  // Se da formato a la salida
+  {
+    $project: {
+      _id: 0,
+      mes: "$_id.mes",
+      medioPago: "$_id.medioPago",
+      cantidad: 1
+    }
+  },
+  // Se ordenar por mes y cantidad descendente
+  {
+    $sort: {
+      mes: 1,
+      cantidad: -1
+    }
+  }
+])
 ```
 
 ## 5. Detección de Cuentas con Transacciones Sospechosas
@@ -40,4 +182,53 @@ A continuación se presentan 5 enunciados de consultas basados en las coleccione
 
 **Consulta MongoDB:**
 ```javascript
+db.transacciones.aggregate([
+  // Filtrar solo retiros
+  {
+    $match: {
+      tipo_transaccion: "retiro"
+    }
+  },
+  // Extraer solo la fecha sin hora (ej: 2023-05-15)
+  {
+    $addFields: {
+      fechaDia: {
+        $dateToString: {
+          format: "%Y-%m-%d",
+          date: { $toDate: "$fecha" }
+        }
+      }
+    }
+  },
+  // Agrupar por cuenta y fecha del día
+  {
+    $group: {
+      _id: {
+        numCuenta: "$num_cuenta",
+        fechaDia: "$fechaDia"
+      },
+      cantidadRetiros: { $sum: 1 },
+      montoTotal: { $sum: "$monto" },
+      detalles: { $push: "$$ROOT" }
+    }
+  },
+  // Filtrar los patrones sospechosos
+  {
+    $match: {
+      cantidadRetiros: { $gt: 0 },
+      montoTotal: { $gt: 1000000 }
+    }
+  },
+  // Formatear la salida
+  {
+    $project: {
+      _id: 0,
+      numCuenta: "$_id.numCuenta",
+      fecha: "$_id.fechaDia",
+      cantidadRetiros: 1,
+      montoTotal: 1,
+      detalles: 1
+    }
+  }
+])
 ```
